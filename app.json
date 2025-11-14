@@ -1,0 +1,16 @@
+{
+  "name": "qadeer-ai",
+  "description": "A WhatsApp bot using Baileys",
+  "repository": "https://github.com/new-user7/qadeer-ai",
+  "env": {
+    "SESSION_ID": {
+      "description": "The session ID here",
+      "value": ""
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ]
+}
