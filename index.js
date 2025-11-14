@@ -5,24 +5,24 @@ console.error("Caught exception:", err);
 require("./settings.js")
 require("./control/function.js")
 const {
-	default: makeWASocket,
-	makeCacheableSignalKeyStore,
-	fetchLatestWaWebVersion,
-	useMultiFileAuthState,
-	DisconnectReason,
-	fetchLatestBaileysVersion,
-	generateForwardMessageContent,
-	prepareWAMessageMedia,
-	generateWAMessageFromContent,
-	generateMessageID,
-	downloadContentFromMessage,
-	makeInMemoryStore,
-	getContentType,
-	jidDecode,
+        default: makeWASocket,
+        makeCacheableSignalKeyStore,
+        fetchLatestWaWebVersion,
+        DisconnectReason,
+        fetchLatestBaileysVersion,
+        generateForwardMessageContent,
+        prepareWAMessageMedia,
+        generateWAMessageFromContent,
+        generateMessageID,
+        downloadContentFromMessage,
+        makeInMemoryStore,
+        getContentType,
+        jidDecode,
     MessageRetryMap,
-	proto,
-	delay,
-	Browsers
+        proto,
+        delay,
+        Browsers,
+        initAuthCreds
 } = require("@whiskeysockets/baileys")
 
 const { say } = require("cfonts");
@@ -30,10 +30,8 @@ const pino = require('pino');
 const { Boom } = require('@hapi/boom');
 const path = require("path");
 const fs = require('fs');
-const readline = require("readline")
-const chalk = require("chalk"); // Chalk pehle se hai
+const chalk = require("chalk");
 const axios = require("axios");
-const qrcode = require("qrcode-terminal");
 const FileType = require('file-type');
 const os = require('os');
 const nou = require('node-os-utils');
@@ -46,28 +44,80 @@ const ConfigBaileys = require("./control/config.js");
 
 const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) })
 
-async function InputNumber(promptText) {
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-    return new Promise((resolve) => {
-        rl.question(promptText, (answer) => {
-            rl.close();
-            resolve(answer);
-        });
-    });
+async function useMemoryAuthState(sessionContent) {
+    const creds = sessionContent ? sessionContent.creds : initAuthCreds();
+    const keys = sessionContent ? sessionContent.keys : {};
+
+    const keyStore = {
+        get: async (type, ids) => {
+            const data = {};
+            for (let id of ids) {
+                let value = keys[`${type}-${id}`];
+                if (type === 'app-state-sync-key' && value) {
+                    value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                }
+                data[id] = value;
+            }
+            return data;
+        },
+        set: async (data) => {
+            for (let type in data) {
+                for (let id in data[type]) {
+                    keys[`${type}-${id}`] = data[type][id];
+                }
+            }
+            saveCreds();
+        }
+    };
+
+    const state = { creds, keys: makeCacheableSignalKeyStore(keyStore, pino({ level: "silent" })) };
+
+    const saveCreds = () => {
+        const session = {
+            creds: state.creds,
+            keys
+        };
+        const base64Session = Buffer.from(JSON.stringify(session, (key, value) => {
+            if (value && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+                return { type: 'Buffer', data: value.data };
+            }
+            return value;
+        })).toString('base64');
+        console.log('SESSION_ID=' + base64Session);
+    };
+
+    return { state, saveCreds };
 }
 
-const pairingCode = true
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('Auth');
+    const SESSION_ID = process.env.SESSION_ID;
+    if (!SESSION_ID) {
+        console.error('SESSION_ID environment variable is required.');
+        process.exit(1);
+    }
+
+    let sessionContent = null;
+    try {
+        const decoded = Buffer.from(SESSION_ID, 'base64').toString('utf-8');
+        sessionContent = JSON.parse(decoded, (key, value) => {
+            if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
+                return Buffer.from(value.data);
+            }
+            return value;
+        });
+        console.log('Using provided SESSION_ID for authentication.');
+    } catch (err) {
+        console.error('Invalid SESSION_ID:', err);
+        process.exit(1);
+    }
+
+    const { state, saveCreds } = await useMemoryAuthState(sessionContent);
     const { version, isLatest } = await fetchLatestWaWebVersion();
-    
+
     const sock = makeWASocket({
         browser: Browsers.ubuntu("Firefox"),  
         generateHighQualityLinkPreview: true,  
-        printQRInTerminal: !pairingCode,
+        printQRInTerminal: false,
         auth: state,        
         version: version,
         getMessage: async (key) => {
@@ -79,54 +129,14 @@ async function startBot() {
         },
         logger: pino({ level: "silent" })
     });
-    
+
     store?.bind(sock.ev)
     console.clear();
-    
-    // ==================================================
-    //          ✨ STYLISH PAIRING CODE BLOCK ✨
-    // ==================================================
-    if (pairingCode && !sock.authState.creds.registered) {
-        
-        // Banner
-        console.log(chalk.cyan.bold("\n╔══════════════════════════════╗"));
-        console.log(chalk.cyan.bold("║      ⚡ QADEER MD PAIRING ⚡     ║"));
-        console.log(chalk.cyan.bold("╚══════════════════════════════╝"));
-        console.log(""); // Add a space
-
-        // Number Input
-        let phoneNumber = await InputNumber(chalk.green.bold('➡️  Enter your bot number (e.g., 923...): '));
-        phoneNumber = phoneNumber.replace(/[^0-9]/g, "")
-        
-        // Request Code
-        setTimeout(async () => {
-            const code = await sock.requestPairingCode(phoneNumber)
-            
-            // Stylish Code Display
-            let stylishCode = code.split("").join(" "); // "ABCD-EFGH" ko "A B C D - E F G H" banayega
-            
-            console.log(chalk.greenBright.bold("\n======================================"));
-            console.log(chalk.yellow.bold("      ✨ Your Pairing Code ✨"));
-            console.log(chalk.white.bold(`\n            ${stylishCode}\n`)); // Code ko spaced aur centered dikhaye ga
-            console.log(chalk.greenBright.bold("======================================"));
-            console.log(chalk.white.bold("\nℹ️  Yeh code apne WhatsApp > Linked Devices mein enter karein."));
-
-        }, 4000)
-    }
-    // ==================================================
-    //                ✨ END OF BLOCK ✨
-    // ==================================================
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
       if (!connection) return;
-      if (connection === "connecting") {                     
-      if (qr && !pairingCode) {
-      console.log("Scan this QR in WhatsApp:");
-      qrcode.generate(qr, { small: true }); 
-         }
-        }
       if (connection === "close") {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.error(lastDisconnect.error);
@@ -169,7 +179,10 @@ async function startBot() {
       try {
       sock.newsletterFollow("120363299692857279@newsletter")
       } catch {}
-      
+
+      // Save and log the SESSION_ID after successful connection
+      saveCreds();
+
       console.log(chalk.white.bold(`\n Successfully connected 🍀\n`));
  }
 });
@@ -192,15 +205,15 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
     if (m.isBaileys) return;
 
     if (!set.botActive && !isOwner) return;
-    
+
     require("./case.js")(sock, m, chatUpdate);
 
   } catch (err) {
     console.log('Error on message:', err);
   }
 });
-    
-    
+
+
   sock.ev.on("call", async (celled) => {
   let anticall = set.anticall
   if (!anticall) return
@@ -220,7 +233,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
     }
   }
 })
-    
+
     sock.decodeJid = (jid) => {
         if (!jid) return jid;
         if (/:\d+@/gi.test(jid)) {
@@ -228,7 +241,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
             return decode.user && decode.server && decode.user + '@' + decode.server || jid;
         } else return jid;
     };
-    
+
     sock.downloadAndSaveMediaMessage = async (message, filename, attachExtension = true) => {
     let quoted = message.msg ? message.msg : message;
     let mime = (message.msg || message).mimetype || "";
@@ -249,7 +262,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
 
     return trueFileName;
     };
-    
+
 
    sock.downloadM = async (m, type, filename = '') => {
         if (!m || !(m.url || m.directPath)) return Buffer.alloc(0)
@@ -261,8 +274,8 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
         if (filename) await fs.promises.writeFile(filename, buffer)
         return filename && fs.existsSync(filename) ? filename : buffer
    }
-   
-   
+
+
    sock.sendImageAsSticker = async (jid, path, quoted, options = {}) => {
     let buff = Buffer.isBuffer(path)
         ? path
@@ -306,7 +319,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
     await sock.sendMessage(jid, { sticker: { url: buffer }, ...options }, { quoted });
     return buffer;
     };
-    
+
     sock.getFile = async (PATH, save) => {
         let res
         let data = Buffer.isBuffer(PATH) ? PATH : /^data:.*?\/.*?;base64,/i.test(PATH) ? Buffer.from(PATH.split`,`[1], 'base64') : /^https?:\/\//.test(PATH) ? await (res = await getBuffer(PATH)) : fs.existsSync(PATH) ? (filename = PATH, fs.readFileSync(PATH)) : typeof PATH === 'string' ? PATH : Buffer.alloc(0)
@@ -321,7 +334,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
         return {
             res,
             filename,
-	    size: await getSizeMedia(data),
+            size: await getSizeMedia(data),
             ...type,
             data
         }
@@ -352,7 +365,7 @@ sock.ev.on('messages.upsert', async (chatUpdate) => {
   let mtype = '',
     mimetype = type.mime,
     convert;
-  
+
   if (/webp/.test(type.mime) || (/image/.test(type.mime) && options.asSticker)) mtype = 'sticker';
   else if (/image/.test(type.mime) || (/webp/.test(type.mime) && options.asImage)) mtype = 'image';
   else if (/video/.test(type.mime)) mtype = 'video';
