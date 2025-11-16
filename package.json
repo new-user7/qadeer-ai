@@ -11,7 +11,7 @@
     "@hapi/boom": "^10.0.0",
     "@octokit/rest": "^21.0.0",
     "@vreden/youtube_scraper": "^1.2.0",
-    "@whiskeysockets/baileys": "npm:@rexxhayanasi/elaina-bail",
+    "@whiskeysockets/baileys": "npm:wileys",
     "axios": "^0.24.0",
     "canvafy": "^7.2.0",
     "cfonts": "^2.9.1",
